@@ -93,7 +93,13 @@ if (USE_TURSO) {
 
 } else {
   // ── LOCAL: sqlite3 ────────────────────────────────────────────────────────
-  const sqlite3 = require('sqlite3').verbose();
+  let sqlite3;
+  try {
+    sqlite3 = require('sqlite3').verbose();
+  } catch (e) {
+    console.error('[DB] sqlite3 not available and no Turso config found. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN env vars for production.');
+    process.exit(1);
+  }
   const path    = require('path');
   const dbPath  = path.resolve(__dirname, 'messenger.db');
 

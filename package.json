@@ -21,8 +21,10 @@
     "google-auth-library": "^9.6.0",
     "multer": "^2.2.0",
     "socket.io": "^4.8.3",
-    "sqlite3": "^6.0.1",
     "streamifier": "^0.1.1"
+  },
+  "optionalDependencies": {
+    "sqlite3": "^6.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
