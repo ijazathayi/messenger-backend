@@ -17,9 +17,6 @@ const { OAuth2Client } = require('google-auth-library');
 const { v2: cloudinary } = require('cloudinary');
 const streamifier        = require('streamifier');
 
-// Initialize DB
-const db = require('./db');
-
 const JWT_SECRET = process.env.SESSION_SECRET || 'messenger_chat_secret';
 const JWT_EXPIRY = '30d'; // stay logged in for 30 days
 
