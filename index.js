@@ -437,7 +437,7 @@ app.put('/api/users/profile', requireAuth, upload.single('avatar'), (req, res) =
 app.get('/api/messages/:userId', requireAuth, (req, res) => {
   const otherUserId = req.params.userId;
   const currentUserId = req.user.id;
-  
+
   db.all(
     `SELECT * FROM messages
      WHERE ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))
@@ -445,15 +445,39 @@ app.get('/api/messages/:userId', requireAuth, (req, res) => {
     [currentUserId, otherUserId, otherUserId, currentUserId],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      // Filter out messages that current user has soft-deleted
+
       const filtered = rows.filter(r => {
         try {
           const deletedBy = JSON.parse(r.deleted_by || '[]');
           return !deletedBy.includes(currentUserId);
-        } catch (e) {
-          return true;
-        }
+        } catch (e) { return true; }
       });
+
+      // Mark undelivered messages sent TO current user as delivered
+      const undelivered = filtered.filter(r =>
+        r.receiver_id === currentUserId && r.status === 'sent'
+      );
+      if (undelivered.length > 0) {
+        const ids = undelivered.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+        db.run(
+          `UPDATE messages SET status = 'delivered' WHERE id IN (${placeholders})`,
+          ids,
+          () => {}
+        );
+        // Notify sender that messages are delivered
+        undelivered.forEach(r => {
+          const senderSocketId = userSockets.get(r.sender_id);
+          if (senderSocketId) {
+            io.to(senderSocketId).emit('message_updated', { id: r.id, status: 'delivered' });
+          }
+        });
+        // Update local copy for response
+        filtered.forEach(r => {
+          if (r.receiver_id === currentUserId && r.status === 'sent') r.status = 'delivered';
+        });
+      }
+
       res.json(filtered);
     }
   );
@@ -544,19 +568,23 @@ io.on('connection', (socket) => {
 
   socket.on('send_message', (data) => {
     const { sender_id, receiver_id, text, attachment_url, attachment_type } = data;
+    const receiverSocketId = userSockets.get(receiver_id);
+    const initialStatus = receiverSocketId ? 'delivered' : 'sent';
+
     db.run(
-      'INSERT INTO messages (sender_id, receiver_id, text, attachment_url, attachment_type) VALUES (?, ?, ?, ?, ?)',
-      [sender_id, receiver_id, text, attachment_url, attachment_type],
+      'INSERT INTO messages (sender_id, receiver_id, text, attachment_url, attachment_type, status) VALUES (?, ?, ?, ?, ?, ?)',
+      [sender_id, receiver_id, text, attachment_url, attachment_type, initialStatus],
       function (err) {
         if (err) return console.error(err);
         const message = {
           id: this.lastID,
           sender_id, receiver_id, text, attachment_url, attachment_type,
-          status: 'sent',
+          status: initialStatus,
           created_at: new Date().toISOString()
         };
+        // Notify sender with actual status
         socket.emit('receive_message', message);
-        const receiverSocketId = userSockets.get(receiver_id);
+        // Notify receiver if online
         if (receiverSocketId) io.to(receiverSocketId).emit('receive_message', message);
       }
     );
