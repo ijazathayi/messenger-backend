@@ -76,6 +76,7 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 const app    = express();
+app.set('trust proxy', 1); // trust Render/Vercel reverse proxy for secure cookies
 const server = http.createServer(app);
 const io     = new Server(server, {
   cors: {
@@ -109,7 +110,12 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'messenger_chat_secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }
+  cookie: {
+    secure: process.env.NODE_ENV === 'production' || !!process.env.RENDER,
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === 'production' || !!process.env.RENDER ? 'none' : 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  }
 }));
 
 // ─── Auth Helpers ──────────────────────────────────────────────
