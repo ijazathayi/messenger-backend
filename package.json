@@ -1,6 +1,6 @@
 {
   "name": "messenger-backend",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Messenger backend – Google Identity Services login",
   "main": "index.js",
   "scripts": {
@@ -17,7 +17,6 @@
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "express-session": "^1.19.0",
     "google-auth-library": "^9.6.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
