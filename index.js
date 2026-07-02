@@ -6,16 +6,22 @@ console.log('[ENV CHECK] TURSO_AUTH_TOKEN:', process.env.TURSO_AUTH_TOKEN ? '✅
 console.log('[ENV CHECK] GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✅ set' : '❌ missing');
 
 const express = require('express');
-const session = require('express-session');
 const cors    = require('cors');
 const http    = require('http');
 const { Server }       = require('socket.io');
 const multer           = require('multer');
 const path             = require('path');
 const fs               = require('fs');
+const jwt              = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const { v2: cloudinary } = require('cloudinary');
 const streamifier        = require('streamifier');
+
+// Initialize DB
+const db = require('./db');
+
+const JWT_SECRET = process.env.SESSION_SECRET || 'messenger_chat_secret';
+const JWT_EXPIRY = '30d'; // stay logged in for 30 days
 
 // Initialize DB
 const db = require('./db');
@@ -76,7 +82,7 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 const app    = express();
-app.set('trust proxy', 1); // trust Render/Vercel reverse proxy for secure cookies
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io     = new Server(server, {
   cors: {
@@ -106,17 +112,6 @@ app.use(cors({
 
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'messenger_chat_secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production' || !!process.env.RENDER,
-    httpOnly: true,
-    sameSite: process.env.NODE_ENV === 'production' || !!process.env.RENDER ? 'none' : 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  }
-}));
 
 // ─── Auth Helpers ──────────────────────────────────────────────
 async function verifyGoogleToken(idToken) {
@@ -128,14 +123,19 @@ async function verifyGoogleToken(idToken) {
 }
 
 function requireAuth(req, res, next) {
-  if (!req.session || !req.session.userId) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    db.get('SELECT * FROM users WHERE id = ?', [decoded.userId], (err, user) => {
+      if (err || !user) return res.status(401).json({ error: 'Unauthorized' });
+      req.user = user;
+      next();
+    });
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
-  db.get('SELECT * FROM users WHERE id = ?', [req.session.userId], (err, user) => {
-    if (err || !user) return res.status(401).json({ error: 'Unauthorized' });
-    req.user = user;
-    next();
-  });
 }
 
 // Generate a unique 4-digit code (1000–9999) not already taken
@@ -153,7 +153,6 @@ function generateUserCode(cb) {
 
 // ─── Auth Routes ───────────────────────────────────────────────
 
-// POST /auth/google/token  — receives Google ID token from frontend
 app.post('/auth/google/token', async (req, res) => {
   const { idToken } = req.body;
   if (!idToken) return res.status(400).json({ error: 'ID token required' });
@@ -162,22 +161,15 @@ app.post('/auth/google/token', async (req, res) => {
     const payload = await verifyGoogleToken(idToken);
     const { sub: googleId, email, name, picture } = payload;
 
-    // Find or create user
     db.get('SELECT * FROM users WHERE google_id = ?', [googleId], (err, existingUser) => {
       if (err) return res.status(500).json({ error: err.message });
 
       if (existingUser) {
-        // Update avatar in case it changed
         db.run('UPDATE users SET avatar = ? WHERE id = ?', [picture, existingUser.id], () => {});
-        req.session.userId = existingUser.id;
-        req.session.save((err) => {
-          if (err) return res.status(500).json({ error: 'Session save failed' });
-          return res.json({ success: true, user: { ...existingUser, avatar: picture } });
-        });
-        return;
+        const token = jwt.sign({ userId: existingUser.id }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+        return res.json({ success: true, token, user: { ...existingUser, avatar: picture } });
       }
 
-      // Create new user with a unique 4-digit code
       generateUserCode((userCode) => {
         db.run(
           'INSERT INTO users (google_id, name, email, avatar, user_code) VALUES (?, ?, ?, ?, ?)',
@@ -185,11 +177,8 @@ app.post('/auth/google/token', async (req, res) => {
           function (err) {
             if (err) return res.status(500).json({ error: err.message });
             const newUser = { id: this.lastID, google_id: googleId, name, email, avatar: picture, user_code: userCode };
-            req.session.userId = this.lastID;
-            req.session.save((errSession) => {
-              if (errSession) return res.status(500).json({ error: 'Session save failed' });
-              return res.json({ success: true, user: newUser });
-            });
+            const token = jwt.sign({ userId: this.lastID }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+            return res.json({ success: true, token, user: newUser });
           }
         );
       });
@@ -201,51 +190,50 @@ app.post('/auth/google/token', async (req, res) => {
 });
 
 app.get('/auth/status', (req, res) => {
-  if (!req.session || !req.session.userId) {
-    return res.json({ authenticated: false });
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.json({ authenticated: false });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    db.get('SELECT * FROM users WHERE id = ?', [decoded.userId], (err, user) => {
+      if (err || !user) return res.json({ authenticated: false });
+      res.json({ authenticated: true, user });
+    });
+  } catch (e) {
+    res.json({ authenticated: false });
   }
-  db.get('SELECT * FROM users WHERE id = ?', [req.session.userId], (err, user) => {
-    if (err || !user) return res.json({ authenticated: false });
-    res.json({ authenticated: true, user });
-  });
 });
 
 app.post('/auth/logout', (req, res) => {
-  req.session.destroy((err) => {
-    if (err) return res.status(500).json({ error: 'Logout failed' });
-    res.json({ success: true });
-  });
+  // JWT is stateless — client just deletes the token
+  res.json({ success: true });
 });
 
 // ─── Admin Routes ──────────────────────────────────────────────
 const ADMIN_KEY = process.env.ADMIN_KEY || 'admin123';
 
 const adminAuth = (req, res, next) => {
-  // 1. Check admin key
   const key = req.headers['x-admin-key'] || req.query.key;
   if (key !== ADMIN_KEY) {
-    console.log('[AdminAuth] Failed: Invalid key provided:', key);
     return res.status(403).json({ error: 'Forbidden: Invalid admin key' });
   }
 
-  // 2. Check user session and email
-  if (!req.session || !req.session.userId) {
-    console.log('[AdminAuth] Failed: No active session found. req.session:', req.session);
-    return res.status(401).json({ error: 'Unauthorized: No active session' });
-  }
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized: No token' });
 
-  db.get('SELECT email FROM users WHERE id = ?', [req.session.userId], (err, user) => {
-    if (err || !user) {
-      console.log('[AdminAuth] Failed: User not found in DB for session userId:', req.session.userId);
-      return res.status(401).json({ error: 'Unauthorized: User not found' });
-    }
-    if (user.email !== 'theijazlegacy@gmail.com') {
-      console.log('[AdminAuth] Failed: User email is not admin. Email:', user.email);
-      return res.status(403).json({ error: 'Forbidden: You do not have admin privileges' });
-    }
-    console.log('[AdminAuth] Success: Authorized admin', user.email);
-    next();
-  });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    db.get('SELECT email FROM users WHERE id = ?', [decoded.userId], (err, user) => {
+      if (err || !user) return res.status(401).json({ error: 'Unauthorized: User not found' });
+      if (user.email !== 'theijazlegacy@gmail.com') {
+        return res.status(403).json({ error: 'Forbidden: You do not have admin privileges' });
+      }
+      next();
+    });
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
 };
 
 app.get('/admin/stats', adminAuth, (req, res) => {
