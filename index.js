@@ -1,4 +1,10 @@
 require('dotenv').config();
+
+// Debug: log which env vars are present (values hidden for security)
+console.log('[ENV CHECK] TURSO_DATABASE_URL:', process.env.TURSO_DATABASE_URL ? '✅ set' : '❌ missing');
+console.log('[ENV CHECK] TURSO_AUTH_TOKEN:', process.env.TURSO_AUTH_TOKEN ? '✅ set' : '❌ missing');
+console.log('[ENV CHECK] GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✅ set' : '❌ missing');
+
 const express = require('express');
 const session = require('express-session');
 const cors    = require('cors');
