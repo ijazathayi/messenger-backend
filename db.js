@@ -26,7 +26,14 @@ if (USE_TURSO) {
 
     run(sql, params = [], cb) {
       turso.execute({ sql, args: params })
-        .then(r  => cb && cb(null))
+        .then(r => {
+          if (cb) {
+            cb.call({
+              lastID: Number(r.lastInsertRowid),
+              changes: Number(r.rowsAffected),
+            }, null);
+          }
+        })
         .catch(e => cb && cb(e));
     },
 
